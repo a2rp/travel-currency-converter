@@ -41,7 +41,7 @@ npm run build
 
 ## Deployment
 
-The project uses Vite with the `/travel-currency-converter/` base path and publishes its production build to GitHub Pages through `gh-pages`.
+The project uses Vite with the `/travel-currency-converter/` base path and publishes its production build to GitHub Pages through `gh-pages`. The deploy command adds `.nojekyll` so GitHub serves the built assets without running Jekyll.
 
 ```sh
 npm run deploy
