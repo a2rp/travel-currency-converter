@@ -17,13 +17,31 @@ const cacheKey = "atlas-fx-rate-cache-v1";
 const pinsKey = "atlas-fx-pinned-currencies-v1";
 const defaultPins = ["EUR", "INR", "JPY"];
 
+const isValidDate = (value) => {
+    if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+    try { return new Date(`${value}T00:00:00.000Z`).toISOString().slice(0, 10) === value; } catch { return false; }
+};
+const sanitizeSnapshot = (snapshot) => {
+    if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot) || !isValidDate(snapshot.date)
+        || !snapshot.rates || typeof snapshot.rates !== "object" || Array.isArray(snapshot.rates)) return null;
+    const rates = Object.fromEntries(Object.entries(snapshot.rates).filter(([code, rate]) => codes.includes(code) && Number.isFinite(rate) && rate > 0));
+    return Object.keys(rates).length ? { date: snapshot.date, rates } : null;
+};
+
 const readCache = () => {
-    try { return JSON.parse(localStorage.getItem(cacheKey) ?? "{}"); } catch { return {}; }
+    try {
+        const saved = JSON.parse(localStorage.getItem(cacheKey) ?? "null");
+        if (!saved || typeof saved !== "object" || Array.isArray(saved)) return {};
+        return Object.fromEntries(Object.entries(saved).flatMap(([base, snapshot]) => {
+            const safeSnapshot = codes.includes(base) ? sanitizeSnapshot(snapshot) : null;
+            return safeSnapshot ? [[base, safeSnapshot]] : [];
+        }));
+    } catch { return {}; }
 };
 const readPins = () => {
     try {
         const saved = JSON.parse(localStorage.getItem(pinsKey) ?? "null");
-        return Array.isArray(saved) ? saved.filter((code) => codes.includes(code)) : defaultPins;
+        return Array.isArray(saved) ? [...new Set(saved.filter((code) => codes.includes(code)))] : defaultPins;
     } catch { return defaultPins; }
 };
 const formatCurrency = (amount, code) => new Intl.NumberFormat("en-US", { style: "currency", currency: code }).format(amount);
@@ -54,7 +72,12 @@ const CurrencyConverter = () => {
                 if (!response.ok) throw new Error("The rate service could not return rates right now.");
                 const rows = await response.json();
                 if (!Array.isArray(rows) || rows.length === 0) throw new Error("No rates were returned for this currency.");
-                const snapshot = { date: rows[0].date, rates: Object.fromEntries(rows.map(({ quote, rate }) => [quote, rate])) };
+                const referenceDate = rows.find((row) => row && codes.includes(row.quote) && typeof row.rate === "number" && Number.isFinite(row.rate) && row.rate > 0 && isValidDate(row.date))?.date;
+                const validRows = referenceDate ? rows.filter((row) => row && codes.includes(row.quote) && row.quote !== fromCurrency
+                    && typeof row.rate === "number" && Number.isFinite(row.rate) && row.rate > 0
+                    && row.date === referenceDate) : [];
+                const snapshot = sanitizeSnapshot({ date: referenceDate, rates: Object.fromEntries(validRows.map(({ quote, rate }) => [quote, rate])) });
+                if (!snapshot) throw new Error("The rate service returned invalid rate data.");
                 if (controller.signal.aborted) return;
                 setRateCache((current) => ({ ...current, [fromCurrency]: snapshot }));
                 try { localStorage.setItem(cacheKey, JSON.stringify({ ...readCache(), [fromCurrency]: snapshot })); } catch { /* The live rates still work when storage is unavailable. */ }
@@ -75,7 +98,11 @@ const CurrencyConverter = () => {
     const snapshot = rateCache[fromCurrency];
     const rate = fromCurrency === toCurrency ? 1 : snapshot?.rates?.[toCurrency] ?? null;
     const numericAmount = Number(amount);
-    const converted = useMemo(() => rate !== null && amount.trim() !== "" && Number.isFinite(numericAmount) ? numericAmount * rate : null, [amount, numericAmount, rate]);
+    const converted = useMemo(() => {
+        if (rate === null || amount.trim() === "" || !Number.isFinite(numericAmount) || numericAmount < 0) return null;
+        const result = numericAmount * rate;
+        return Number.isFinite(result) ? result : null;
+    }, [amount, numericAmount, rate]);
     const dateText = snapshot?.date ? formatDate(snapshot.date) : "";
     const suggestedCodes = ["EUR", "GBP", "INR", "JPY", "CAD", "THB"].filter((code) => code !== fromCurrency && snapshot?.rates?.[code] !== undefined);
     const quickPins = pinnedCurrencies.filter((code) => code !== fromCurrency && snapshot?.rates?.[code] !== undefined);
